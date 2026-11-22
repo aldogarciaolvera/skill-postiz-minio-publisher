@@ -97,23 +97,54 @@ informarle inmediatamente el motivo del bloqueo antes de intentar subir nada.
    *(También se puede pasar `--video` repetido con `--name` en el mismo orden
    cuando el usuario indique un esquema específico como `reel_01_01_es.mp4`,
    `reel_01_02_es.mp4`, etc.).*
-4. **Pedir confirmación explícita antes de subir:**
-   Mostrar al usuario la carpeta destino (`project_normalized` y si ya existe o
-   se creará), la tabla de Reels validados (duración, resolución, tamaño en MiB,
-   nombre normalizado, si alguno ya existe en MinIO) y las URLs resultantes
-   (`https://s3.atomsystems.org/postiz/...`). **No ejecutar `upload` hasta que
-   el usuario confirme.**
-5. **Ejecutar la subida verificada (con barra de progreso en vivo):**
-   ```powershell
-   uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" upload `
-     --video-dir "<carpeta_reels>" `
-     --project "<proyecto/subcarpeta>"
-   ```
-   *(Agregar `--video`, `--name`, `--thumbnail`, `--extra`, `--skip-existing`,
-   `--overwrite` o `--progress-file "<ruta.json>"` según lo confirmado por el
-   usuario. Por defecto imprime en `stderr` una barra de progreso con `%`,
-   velocidad y ETA).*
-   Confirmar que el JSON devuelva `upload_status` exitoso y `http_check.accessible: true`.
+4. **Pedir confirmación explícita antes de subir y ofrecer visibilidad en PowerShell:**
+   Mostrar al usuario:
+   * La carpeta destino (`project_normalized` y si ya existe o se creará).
+   * La tabla de Reels validados (duración, resolución, tamaño en MiB, nombre
+     normalizado, si alguno ya existe en MinIO) y las URLs resultantes
+     (`https://s3.atomsystems.org/postiz/...`).
+   * **El comando exacto de `upload` en PowerShell** listo para copiar/ejecutar
+     si quiere ver la subida directamente en su terminal PowerShell.
+   * Preguntar además cómo prefiere ejecutar la subida una vez confirme (**no
+     ejecutar `upload` hasta que el usuario confirme**):
+     * **Modo PowerShell directo (para ver `mc.exe` en tu terminal):** el usuario
+       ejecuta el comando `upload` mostrado en su propia terminal PowerShell (del
+       IDE o Windows Terminal) y avisa al terminar para que el agente verifique.
+     * **Modo agente + monitor `watch` en PowerShell:** el agente ejecuta
+       `upload` en segundo plano con `--progress-file` y entrega de inmediato el
+       comando corto `watch` para seguir el avance en vivo desde cualquier
+       PowerShell.
+5. **Ejecutar o verificar la subida:**
+   * **Si el usuario eligió ejecutar `upload` en su PowerShell:** esperar su aviso
+     de finalización y verificar todos los archivos remotos + acceso HTTPS con:
+     ```powershell
+     uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" verify `
+       --video-dir "<carpeta_reels>" `
+       --project "<proyecto/subcarpeta>"
+     ```
+     *(Usando exactamente los mismos `--video`, `--name`, `--thumbnail` y
+     `--extra` aprobados). Confirmar `all_verified: true` y
+     `all_http_accessible: true`.*
+   * **Si el usuario eligió que el agente ejecute `upload`:** correr siempre con
+     `--progress-file` (por defecto usa `$env:TEMP\postiz_upload_progress.json`
+     si no se especifica otro):
+     ```powershell
+     uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" upload `
+       --video-dir "<carpeta_reels>" `
+       --project "<proyecto/subcarpeta>" `
+       --progress-file "$env:TEMP\postiz_upload_progress.json"
+     ```
+     *(Agregar `--video`, `--name`, `--thumbnail`, `--extra`, `--skip-existing`
+     o `--overwrite` según lo confirmado).*
+     En cuanto inicie (y si pasa a segundo plano), mostrar inmediatamente al
+     usuario el comando listo para ver la barra en vivo en su terminal
+     PowerShell:
+     ```powershell
+     uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" watch --progress-file "$env:TEMP\postiz_upload_progress.json"
+     ```
+     *(También puede abrir el archivo `.log` de la tarea en **Background Tasks /
+     Terminals** de Antigravity).* Al finalizar, confirmar que el JSON devuelva
+     `upload_status` exitoso y `http_check.accessible: true`.
 
 ### Paso 3: Consulta de canales, horarios disponibles y esquemas en Postiz
 1. Llamar a `groupList` (si aplica) e `integrationList` para mostrar los canales

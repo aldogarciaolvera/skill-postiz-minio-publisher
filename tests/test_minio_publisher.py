@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -300,6 +303,153 @@ class TestUploadAndTimezone(unittest.TestCase):
         self.assertEqual(len(cp_calls), 2)
         progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
         self.assertEqual(progress_data["status"], "done")
+        self.assertEqual(progress_data["completed_assets"], 2)
+        self.assertEqual(progress_data["total_assets"], 2)
+        self.assertEqual([a["status"] for a in progress_data["assets"]], ["uploaded", "uploaded"])
+        self.assertEqual(progress_data["assets"][0]["http_status"], 200)
+        self.assertTrue(progress_data["recent_events"])
+
+    def test_upload_writes_error_state_to_progress_file_on_failure(self) -> None:
+        video = self.root / "Clip Error.mp4"
+        video.write_bytes(b"12345678")
+        progress_path = self.root / "progress_err.json"
+
+        def fake_run_mc(args: list[str]) -> subprocess.CompletedProcess[str]:
+            cmd = args[0]
+            if cmd == "ls":
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            if cmd == "stat":
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="Object does not exist")
+            if cmd == "cp":
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="network error")
+            raise AssertionError(f"Unexpected mc args: {args}")
+
+        with patch.object(mp, "run_mc", side_effect=fake_run_mc):
+            ns = mp.build_parser().parse_args(
+                [
+                    "upload",
+                    "--video",
+                    str(video),
+                    "--project",
+                    "Mi Serie",
+                    "--quiet",
+                    "--progress-file",
+                    str(progress_path),
+                ]
+            )
+            with self.assertRaises(mp.PublisherError) as ctx:
+                mp.cmd_upload(ns)
+        self.assertEqual(ctx.exception.code, "mc_cp_failed")
+        progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual(progress_data["status"], "error")
+        self.assertEqual(progress_data["assets"][0]["status"], "error")
+        self.assertIn("network error", progress_data["error"])
+
+    def test_verify_succeeds_and_detects_missing_or_mismatched_assets(self) -> None:
+        video = self.root / "Reel_01_EN.mp4"
+        video.write_bytes(b"12345678")
+        remote_sizes: dict[str, int] = {"minio/postiz/gta-vi/reel_01_en.mp4": 8}
+
+        def fake_run_mc(args: list[str]) -> subprocess.CompletedProcess[str]:
+            cmd = args[0]
+            if cmd == "ls":
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            if cmd == "stat":
+                target = args[-1]
+                if target in remote_sizes:
+                    payload = json.dumps({"status": "success", "size": remote_sizes[target], "type": "file"})
+                    return subprocess.CompletedProcess(args, 0, stdout=payload, stderr="")
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="Object does not exist")
+            raise AssertionError(f"Unexpected mc args: {args}")
+
+        ns = mp.build_parser().parse_args(["verify", "--video", str(video), "--project", "gta-vi"])
+        with (
+            patch.object(mp, "run_mc", side_effect=fake_run_mc),
+            patch.object(mp, "head_url", return_value={"accessible": True, "status_code": 200}),
+        ):
+            res = mp.cmd_verify(ns)
+
+        self.assertTrue(res["all_verified"])
+        self.assertTrue(res["all_http_accessible"])
+        self.assertEqual(res["video"]["upload_status"], "verified")
+        self.assertEqual(
+            res["postiz_attachment_suggestion"],
+            "https://s3.atomsystems.org/postiz/gta-vi/reel_01_en.mp4",
+        )
+
+        remote_sizes["minio/postiz/gta-vi/reel_01_en.mp4"] = 4
+        with patch.object(mp, "run_mc", side_effect=fake_run_mc):
+            with self.assertRaises(mp.PublisherError) as ctx_size:
+                mp.cmd_verify(ns)
+        self.assertEqual(ctx_size.exception.code, "size_mismatch")
+
+        remote_sizes.clear()
+        with patch.object(mp, "run_mc", side_effect=fake_run_mc):
+            with self.assertRaises(mp.PublisherError) as ctx_missing:
+                mp.cmd_verify(ns)
+        self.assertEqual(ctx_missing.exception.code, "remote_not_found")
+
+    def test_watch_once_and_render_snapshot(self) -> None:
+        progress_path = self.root / "watch.json"
+        state = {
+            "pid": 1234,
+            "status": "uploading",
+            "mc_folder": "minio/postiz/gta-vi/reels-en/",
+            "total_assets": 2,
+            "completed_assets": 1,
+            "percent": 75.0,
+            "total_mib": 200.0,
+            "updated_at": "2026-11-22T06:45:00-06:00",
+            "assets": [
+                {
+                    "index": 1,
+                    "name": "reel_01_01_en.mp4",
+                    "size_mib": 100.0,
+                    "status": "uploaded",
+                    "percent": 100.0,
+                    "http_status": 200,
+                    "public_url": "https://s3.atomsystems.org/postiz/gta-vi/reels-en/reel_01_01_en.mp4",
+                },
+                {
+                    "index": 2,
+                    "name": "reel_01_02_en.mp4",
+                    "size_mib": 100.0,
+                    "status": "uploading",
+                    "percent": 50.0,
+                    "transferred": "50.0 MiB",
+                    "speed": "2.5 MiB/s",
+                    "eta": "20s",
+                    "public_url": "https://s3.atomsystems.org/postiz/gta-vi/reels-en/reel_01_02_en.mp4",
+                },
+            ],
+            "recent_events": ["[06:45:00] Subido: reel_01_01_en.mp4 (HTTP 200)"],
+            "error": None,
+        }
+        mp.write_progress_file(progress_path, state)
+
+        rendered = mp.render_watch_snapshot(state)
+        self.assertIn("SUBIENDO", rendered)
+        self.assertIn("[OK]", rendered)
+        self.assertIn("[SUBIENDO]", rendered)
+        self.assertIn("50.0% | 50.0 MiB | 2.5 MiB/s | ETA 20s", rendered)
+
+        stale_rendered = mp.render_watch_snapshot(state, stale_process=True)
+        self.assertIn("INTERRUMPIDO", stale_rendered)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mp.main(["watch", "--progress-file", str(progress_path), "--once"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Monitor de Subida", buf.getvalue())
+
+        err_buf = io.StringIO()
+        with contextlib.redirect_stdout(err_buf):
+            missing_rc = mp.main(["watch", "--progress-file", str(self.root / "missing.json"), "--once"])
+        self.assertEqual(missing_rc, 1)
+        self.assertIn("progress_file_not_found", err_buf.getvalue())
+
+        self.assertTrue(mp.is_pid_running(os.getpid()))
+        self.assertFalse(mp.is_pid_running(0))
 
     def test_to_utc_explicit_offset(self) -> None:
         ns = mp.build_parser().parse_args(["to-utc", "--local-datetime", "2026-11-22T18:30:00-06:00"])

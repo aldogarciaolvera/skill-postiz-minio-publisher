@@ -20,8 +20,10 @@ mediante `mc.exe`, para luego programarlos o publicarlos en redes sociales con e
   `minio/postiz/`, pregunta si subir a la raíz o a una subcarpeta por proyecto
   (creándola automáticamente si no existe) y exige confirmación explícita antes
   de iniciar la subida.
-- **Barra de progreso en vivo:** transmite progreso limpio (`%`, velocidad y ETA)
-  en `stderr` y soporta `--progress-file` para monitores externos.
+- **Visibilidad en terminal PowerShell (2 modos):** permite al usuario correr el
+  comando `upload` directamente en su terminal PowerShell (y luego validar con
+  `verify`), o bien dejar que el agente suba en segundo plano mientras el usuario
+  observa el tablero por archivo en vivo con `watch --progress-file ...`.
 - **Cero duplicación en Postiz:** envía directamente las URLs
   `https://s3.atomsystems.org/postiz/...` a `integrationSchedulePostTool` sin
   pasar por `uploadFromUrlTool`.
@@ -115,10 +117,19 @@ uv run ./scripts/minio_publisher.py prepare `
   --video-dir "D:\Videos\Clips\Parte1\ES" `
   --project "gta-vi/reels-es"
 
-# Subir lote de Reels con nombres normalizados personalizados y barra de progreso
+# Subir lote de Reels con nombres normalizados personalizados y progreso JSON
 uv run ./scripts/minio_publisher.py upload `
   --video "D:\Videos\Clips\Parte1\ES\Reel_01_ES.mp4" --name "reel_01_01_es.mp4" `
   --video "D:\Videos\Clips\Parte1\ES\Reel_02_ES.mp4" --name "reel_01_02_es.mp4" `
+  --project "gta-vi/reels-es" `
+  --progress-file "$env:TEMP\postiz_upload_progress.json"
+
+# Ver en vivo la subida desde otra terminal PowerShell
+uv run ./scripts/minio_publisher.py watch --progress-file "$env:TEMP\postiz_upload_progress.json"
+
+# Verificar activos subidos manualmente en PowerShell (mc stat + HTTP HEAD)
+uv run ./scripts/minio_publisher.py verify `
+  --video-dir "D:\Videos\Clips\Parte1\ES" `
   --project "gta-vi/reels-es"
 
 # Convertir hora local del sistema a UTC para Postiz
