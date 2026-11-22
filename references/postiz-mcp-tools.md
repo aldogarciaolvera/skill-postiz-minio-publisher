@@ -8,8 +8,7 @@ usan dentro del flujo `postiz-minio-publisher`.
 > `CLOUDFLARE_BUCKET_URL="https://s3.atomsystems.org/postiz"`, las URLs
 > `https://s3.atomsystems.org/postiz/...` pasan directamente la validación de
 > dominio en `integrationSchedulePostTool`. **No** llames a `uploadFromUrlTool`
-> para archivos ya subidos a `minio/postiz`, así evitas duplicar o re-descargar
-> videos pesados (ej. 6 GB).
+> para Reels ya subidos a `minio/postiz`, así evitas duplicar medios.
 
 ## 1. Canales y grupos
 

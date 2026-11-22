@@ -115,6 +115,122 @@ class TestPreparationAndValidation(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.code, "target_collision")
 
+    def test_batch_videos_with_custom_names(self) -> None:
+        v1 = self._make_file("Reel_01_ES.mp4", b"v1")
+        v2 = self._make_file("Reel_02_ES.mp4", b"v2")
+
+        plan = mp.prepare_assets(
+            video=[str(v1), str(v2)],
+            thumbnail=None,
+            extras=[],
+            project="gta-vi/reels-es",
+            alias="minio",
+            bucket="postiz",
+            base_url="https://s3.atomsystems.org/postiz",
+            check_remote=False,
+            video_names=["reel_01_01_es.mp4", "reel_01_02_es"],
+        )
+
+        self.assertEqual(len(plan["videos"]), 2)
+        self.assertEqual(
+            [v["object_key"] for v in plan["videos"]],
+            ["gta-vi/reels-es/reel_01_01_es.mp4", "gta-vi/reels-es/reel_01_02_es.mp4"],
+        )
+
+    def test_video_dir_discovers_sorted_reels(self) -> None:
+        reels_dir = self.root / "ES"
+        reels_dir.mkdir()
+        (reels_dir / "Reel_02_ES.mp4").write_bytes(b"v2")
+        (reels_dir / "Reel_01_ES.mp4").write_bytes(b"v1")
+        (reels_dir / "notes.txt").write_text("ignore", encoding="utf-8")
+
+        plan = mp.prepare_assets(
+            video=[],
+            video_dirs=[str(reels_dir)],
+            thumbnail=None,
+            extras=[],
+            project="gta-vi/reels-es",
+            alias="minio",
+            bucket="postiz",
+            base_url="https://s3.atomsystems.org/postiz",
+            check_remote=False,
+        )
+        self.assertEqual(
+            [v["normalized_name"] for v in plan["videos"]],
+            ["reel_01_es.mp4", "reel_02_es.mp4"],
+        )
+
+    def test_rejects_long_horizontal_and_oversized_videos(self) -> None:
+        clip = self._make_file("Parte1.mp4", b"video")
+
+        with patch.object(
+            mp,
+            "probe_video",
+            return_value={"duration_sec": 5500.0, "width": 1080, "height": 1920},
+        ):
+            with self.assertRaises(mp.PublisherError) as ctx_dur:
+                mp.prepare_assets(
+                    video=str(clip),
+                    thumbnail=None,
+                    extras=[],
+                    project=None,
+                    alias="minio",
+                    bucket="postiz",
+                    base_url="https://s3.atomsystems.org/postiz",
+                    check_remote=False,
+                )
+            self.assertEqual(ctx_dur.exception.code, "reel_too_long")
+
+        with patch.object(
+            mp,
+            "probe_video",
+            return_value={"duration_sec": 64.0, "width": 1920, "height": 1080},
+        ):
+            with self.assertRaises(mp.PublisherError) as ctx_orient:
+                mp.prepare_assets(
+                    video=str(clip),
+                    thumbnail=None,
+                    extras=[],
+                    project=None,
+                    alias="minio",
+                    bucket="postiz",
+                    base_url="https://s3.atomsystems.org/postiz",
+                    check_remote=False,
+                )
+            self.assertEqual(ctx_orient.exception.code, "reel_not_vertical")
+
+        with self.assertRaises(mp.PublisherError) as ctx_size:
+            mp.validate_reel_constraints(
+                {
+                    "local_path": str(clip),
+                    "original_name": "Parte1.mp4",
+                    "size_mib": 600.0,
+                    "media_probe": None,
+                },
+                max_duration_sec=180.0,
+                max_size_mib=500.0,
+                allow_landscape=False,
+            )
+        self.assertEqual(ctx_size.exception.code, "reel_too_large")
+
+
+class TestProgressHelpers(unittest.TestCase):
+    def test_parse_mc_progress_strips_ansi_and_extracts_metrics(self) -> None:
+        raw = "\x1b[32m...Parte1.mp4:\x1b[0m       ============----------------  45.1% 2.7 GiB   2.0 MiB/s"
+        parsed = mp.parse_mc_progress(raw)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertAlmostEqual(parsed["percent"], 45.1)
+        self.assertEqual(parsed["transferred"], "2.7 GiB")
+        self.assertEqual(parsed["speed"], "2.0 MiB/s")
+
+    def test_format_eta_and_progress_bar(self) -> None:
+        self.assertEqual(mp.format_eta(50.0, 30.0), "30s")
+        self.assertEqual(mp.format_eta(25.0, 60.0), "3m 0s")
+        self.assertEqual(mp.format_eta(100.0, 12.0), "0s")
+        bar = mp.format_progress_bar("gta-vi/parte1.mp4", 50.0, "3.1 GiB", "10 MiB/s", "5m 0s", width=10)
+        self.assertEqual(bar, "[#####-----]  50.0% | 3.1 GiB | 10 MiB/s | ETA 5m 0s | gta-vi/parte1.mp4")
+
 
 class TestUploadAndTimezone(unittest.TestCase):
     def setUp(self) -> None:
@@ -146,10 +262,11 @@ class TestUploadAndTimezone(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 0, stdout=payload, stderr="")
                 return subprocess.CompletedProcess(args, 1, stdout="", stderr="Object does not exist")
             if cmd == "cp":
-                uploaded_targets.add(args[2])
+                uploaded_targets.add(args[-1])
                 return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
             raise AssertionError(f"Unexpected mc args: {args}")
 
+        progress_path = self.root / "progress.json"
         with (
             patch.object(mp, "run_mc", side_effect=fake_run_mc),
             patch.object(mp, "head_url", return_value={"accessible": True, "status_code": 200}),
@@ -163,6 +280,9 @@ class TestUploadAndTimezone(unittest.TestCase):
                     str(thumb),
                     "--project",
                     "Mi Serie",
+                    "--quiet",
+                    "--progress-file",
+                    str(progress_path),
                 ]
             )
             res = mp.cmd_upload(ns)
@@ -178,12 +298,57 @@ class TestUploadAndTimezone(unittest.TestCase):
         )
         cp_calls = [c for c in calls if c[0] == "cp"]
         self.assertEqual(len(cp_calls), 2)
+        progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual(progress_data["status"], "done")
 
     def test_to_utc_explicit_offset(self) -> None:
         ns = mp.build_parser().parse_args(["to-utc", "--local-datetime", "2026-11-22T18:30:00-06:00"])
         res = mp.cmd_to_utc(ns)
         self.assertEqual(res["utc_iso"], "2026-11-23T00:30:00Z")
         self.assertEqual(res["utc_no_z"], "2026-11-23T00:30:00")
+
+
+class TestBuildDescription(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_chapters_first_blank_line_then_credits_without_full_links(self) -> None:
+        chapters = self.root / "chapters1.txt"
+        chapters.write_text("00:00 Intro\n01:14 Huida\n", encoding="utf-8")
+        credits_file = self.root / "youtube_credits.txt"
+        credits_file.write_text(
+            "Music Credits:\n- Track by Artist (freetouse.com) | License: https://freetouse.com/license\n",
+            encoding="utf-8",
+        )
+
+        res = mp.build_description_payload(chapters_file=str(chapters), credits_file=str(credits_file))
+        self.assertEqual(
+            res["plain_text"],
+            "00:00 Intro\n"
+            "01:14 Huida\n"
+            "\n"
+            "Music Credits:\n"
+            "- Track by Artist (freetouse.com) | License: https://freetouse .com/license",
+        )
+        self.assertEqual(
+            res["html_content"],
+            "<p>00:00 Intro</p>"
+            "<p>01:14 Huida</p>"
+            "<p></p>"
+            "<p>Music Credits:</p>"
+            "<p>- Track by Artist (freetouse.com) | License: https://freetouse .com/license</p>",
+        )
+        self.assertTrue(res["within_youtube_limit"])
+
+    def test_keep_full_links_flag_preserves_urls(self) -> None:
+        credits_file = self.root / "credits.txt"
+        credits_file.write_text("License: https://freetouse.com/license\n", encoding="utf-8")
+        res = mp.build_description_payload(credits_file=str(credits_file), keep_full_links=True)
+        self.assertEqual(res["plain_text"], "License: https://freetouse.com/license")
 
 
 if __name__ == "__main__":

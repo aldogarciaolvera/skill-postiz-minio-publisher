@@ -1,20 +1,21 @@
 ---
 name: postiz-minio-publisher
 description: >-
-  Valida, normaliza y sube videos (.mp4, .mov, .mkv), miniaturas y archivos
-  auxiliares de proyecto a MinIO S3 (minio/postiz) mediante mc.exe y el script
-  helper, y programa o publica en redes sociales usando el servidor MCP de
-  Postiz sin re-descargar medios. Usar al invocar @postiz-minio-publisher o
-  /postiz-minio-publisher, o al pedir subir un video a MinIO y publicarlo en
-  Postiz.
+  Valida, normaliza y sube exclusivamente Reels/Shorts verticales (.mp4, .mov,
+  .mkv; hasta 180 s y 500 MiB por defecto) por archivo o carpeta a MinIO S3
+  (minio/postiz) mediante mc.exe y el script helper, y programa o publica en
+  redes sociales usando el servidor MCP de Postiz sin re-descargar medios. Usar
+  al invocar @postiz-minio-publisher o /postiz-minio-publisher, o al pedir
+  subir Reels/Shorts/TikToks a MinIO y publicarlos en Postiz.
 ---
 
-# Postiz & MinIO Social Video Publisher
+# Postiz & MinIO Reels Publisher
 
-Actúa como un Ingeniero de Automatización y Gestor de Contenidos Multiplataforma.
-Tu objetivo es validar y subir videos y activos de proyecto a MinIO
-(`minio/postiz`) y programar o publicar en redes sociales mediante el servidor
-MCP de Postiz usando directamente las URLs de `https://s3.atomsystems.org/postiz/...`.
+Actúa como un Ingeniero de Automatización y Gestor de Contenidos Cortos
+Multiplataforma. Tu objetivo es validar y subir **exclusivamente Reels / Shorts /
+TikToks** (clips verticales cortos) a MinIO (`minio/postiz`) y programarlos o
+publicarlos en redes sociales mediante el servidor MCP de Postiz usando
+directamente las URLs de `https://s3.atomsystems.org/postiz/...`.
 
 Para detalles de los parámetros de cada herramienta MCP de Postiz, consulta
 [references/postiz-mcp-tools.md](./references/postiz-mcp-tools.md).
@@ -43,20 +44,39 @@ Para detalles de los parámetros de cada herramienta MCP de Postiz, consulta
 
 Activar esta habilidad cuando:
 * El usuario invoque `@postiz-minio-publisher` o `/postiz-minio-publisher`.
-* El usuario pase la ruta de un video local y pida subirlo a MinIO/S3 y
-  publicarlo o programarlo en Postiz.
+* El usuario pase uno o varios **Reels / Shorts / TikToks** (o una carpeta con
+  clips cortos) y pida subirlos a MinIO/S3 y publicarlos o programarlos en
+  Postiz.
 
 ---
 
-## 3. Flujo operativo (paso a paso)
+## 3. Reglas estrictas de solo Reels
 
-### Paso 1: Recepción de archivos locales
-1. Capturar la ruta local del **video principal** (solo se admiten
-   `.mp4`, `.mov`, `.mkv`).
+Por defecto, `scripts/minio_publisher.py` bloquea videos largos o horizontales:
+* **Extensiones permitidas:** `.mp4`, `.mov`, `.mkv`.
+* **Orientación vertical:** `height >= width` (ej. `1080×1920`). Rechaza videos
+  `16:9` horizontales (`reel_not_vertical`), salvo `--allow-landscape` explícito.
+* **Duración máxima:** `180 s` / 3 minutos por defecto (`reel_too_long`).
+* **Tamaño máximo:** `500 MiB` por defecto (`reel_too_large`), evitando los
+  fallos de transferencia y rangos HTTP de videos largos de varios GB.
+
+Si el usuario intenta subir un video largo (> 3 min, > 500 MiB o 16:9),
+informarle inmediatamente el motivo del bloqueo antes de intentar subir nada.
+
+---
+
+## 4. Flujo operativo (paso a paso)
+
+### Paso 1: Recepción de Reels locales (archivo o carpeta)
+1. Capturar la ruta de uno o varios Reels (`--video`) o de una carpeta completa
+   (`--video-dir`, por ejemplo `D:\Videos\Clips\Parte1\ES`).
 2. Preguntar o capturar si además desea subir al mismo proyecto en MinIO:
-   * **Miniatura / portada** (`.jpg`, `.jpeg`, `.png`, `.webp`).
-   * **Archivos auxiliares de proyecto** (líneas del tiempo `.fcpxml`/`.edl`/`.drp`,
-     subtítulos `.srt`/`.vtt`, licencias `.txt`/`.pdf`/`.md`, etc.).
+   * **Miniatura / portada** (`.jpg`, `.jpeg`, `.png`, `.webp`). Si está en
+     `.webp` y se va a publicar en YouTube/Postiz, convertirla primero a
+     `.jpg` (`1280×720` o vertical correspondiente, `ffmpeg -i <origen.webp> -q:v 2 <destino.jpg>`)
+     antes de subirla.
+   * **Archivos auxiliares de proyecto** (subtítulos `.srt`/`.vtt`, créditos
+     `.txt`, etc.) solo si el usuario los pide.
 
 ### Paso 2: Selección de carpeta en MinIO, normalización y subida confirmada
 1. **Listar proyectos existentes** en `minio/postiz/`:
@@ -64,80 +84,86 @@ Activar esta habilidad cuando:
    uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" list-projects
    ```
 2. **Preguntar ubicación al usuario** mostrando los proyectos existentes:
-   * **Subcarpeta por proyecto (preferida):** `minio/postiz/<proyecto>/` (si el
-     proyecto no existe aún, el prefijo se crea automáticamente al subir).
+   * **Subcarpeta por proyecto/lote (preferida):** por ejemplo
+     `minio/postiz/<proyecto>/` o `minio/postiz/<proyecto>/reels-es/` (si el
+     prefijo no existe aún, se crea automáticamente al subir).
    * **Raíz del bucket:** `minio/postiz/`.
 3. **Validar y previsualizar nombres normalizados (sin subir todavía):**
    ```powershell
    uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" prepare `
-     --video "<ruta_video>" `
-     --thumbnail "<ruta_miniatura>" `
-     --extra "<ruta_auxiliar_1>" `
-     --project "<nombre_proyecto>"
+     --video-dir "<carpeta_reels>" `
+     --project "<proyecto/subcarpeta>"
    ```
-   *(Omitir `--project` si eligió raíz; omitir `--thumbnail` / `--extra` si no
-   aplican).*
+   *(También se puede pasar `--video` repetido con `--name` en el mismo orden
+   cuando el usuario indique un esquema específico como `reel_01_01_es.mp4`,
+   `reel_01_02_es.mp4`, etc.).*
 4. **Pedir confirmación explícita antes de subir:**
    Mostrar al usuario la carpeta destino (`project_normalized` y si ya existe o
-   se creará), los nombres normalizados de cada archivo (minúsculas ASCII sin
-   espacios ni acentos), su tamaño, si alguno ya existe en MinIO y las URLs
-   resultantes (`https://s3.atomsystems.org/postiz/...`). **No ejecutar `upload`
-   hasta que el usuario confirme.**
-5. **Ejecutar la subida verificada:**
+   se creará), la tabla de Reels validados (duración, resolución, tamaño en MiB,
+   nombre normalizado, si alguno ya existe en MinIO) y las URLs resultantes
+   (`https://s3.atomsystems.org/postiz/...`). **No ejecutar `upload` hasta que
+   el usuario confirme.**
+5. **Ejecutar la subida verificada (con barra de progreso en vivo):**
    ```powershell
    uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" upload `
-     --video "<ruta_video>" `
-     --project "<nombre_proyecto>"
+     --video-dir "<carpeta_reels>" `
+     --project "<proyecto/subcarpeta>"
    ```
-   *(Agregar `--thumbnail`, `--extra`, `--skip-existing` o `--overwrite` según
-   lo confirmado por el usuario).*
+   *(Agregar `--video`, `--name`, `--thumbnail`, `--extra`, `--skip-existing`,
+   `--overwrite` o `--progress-file "<ruta.json>"` según lo confirmado por el
+   usuario. Por defecto imprime en `stderr` una barra de progreso con `%`,
+   velocidad y ETA).*
    Confirmar que el JSON devuelva `upload_status` exitoso y `http_check.accessible: true`.
 
 ### Paso 3: Consulta de canales, horarios disponibles y esquemas en Postiz
 1. Llamar a `groupList` (si aplica) e `integrationList` para mostrar los canales
    conectados (`integrationId`, nombre, `platform`).
-2. Si el usuario quiere revisar huecos o programar fecha, convertir la ventana
-   local a UTC con:
+2. Si el usuario quiere programar en lote (por ejemplo a las `06:00` local y
+   cada `4` horas los siguientes), convertir cada fecha/hora local a UTC con:
    ```powershell
    uv run "<ruta_de_esta_skill>/scripts/minio_publisher.py" to-utc --local-datetime "<YYYY-MM-DD HH:MM>"
    ```
-   y consultar `postsListTool` en esa ventana UTC.
+   y consultar `postsListTool` en esa ventana UTC para evitar colisiones.
 3. Para cada plataforma elegida, llamar a `integrationSchema` (`platform`,
-   `isPremium`) y, si devuelve `tools` necesarios (playlists, categorías, etc.),
-   invocar `triggerTool` para obtener los IDs reales requeridos por `settings`.
+   `isPremium`) y, si devuelve `tools` necesarios, invocar `triggerTool` para
+   obtener los IDs reales requeridos por `settings`.
 
 ### Paso 4: Confirmación de publicación (sin comentarios, hora local → UTC)
 Antes de llamar a `integrationSchedulePostTool`, confirmar siempre con el usuario:
 1. **Tipo de envío (preguntar siempre):** `"schedule"` (programado), `"draft"`
    (borrador) o `"now"` (publicar ahora).
 2. **Fecha y hora:** aceptar la hora en la **zona horaria local del usuario**
-   (del sistema) y convertirla a UTC con el subcomando `to-utc` (o `to-utc --local-datetime now` si eligió `"now"`).
-3. **Canales destino y texto HTML:**
+   (del sistema) y convertirla a UTC con `to-utc` (o `to-utc --local-datetime now`
+   si eligió `"now"`).
+3. **Canales destino, títulos y texto HTML (`content`):**
    * Formatear cada línea de `content` dentro de `<p>...</p>` (etiquetas válidas:
      `h1`, `h2`, `h3`, `u`, `strong`, `li`, `ul`, `p`; nunca combinar `u` +
      `strong`).
+   * **Descripción desde archivos (si el usuario proporciona texto/créditos):**
+     usar `build-description` (`chapters` primero si aplica, línea en blanco
+     `<p></p>`, luego `credits`, rompiendo por defecto enlaces `https://` con
+     espacio antes del dominio como `https://freetouse .com/license` salvo
+     `--keep-full-links`).
    * **Sin comentarios:** `postsAndComments` debe llevar **un único elemento**
      (solo el post principal).
-4. **Uso de miniaturas y archivos auxiliares:**
-   * **Video:** pasar directamente `https://s3.atomsystems.org/postiz/<ruta_video>`
+4. **Uso de medios en Postiz:**
+   * **Reel:** pasar directamente `https://s3.atomsystems.org/postiz/<ruta_reel>`
      en `attachments`. **No usar `uploadFromUrlTool`** para archivos ya subidos
-     a `minio/postiz` (Postiz comparte el bucket y toma el video directo sin
-     re-descargar archivos pesados).
-   * **Miniatura (`.jpg`/`.png`/`.webp`):** vincular su URL S3 en
-     `attachments[0].thumbnail` (y/o en `settings.thumbnail` si el esquema de la
-     plataforma lo solicita; verificar `integrationSchema`).
-   * **Archivos auxiliares (líneas del tiempo, licencias, subtítulos, etc.):**
-     quedan almacenados en `minio/postiz/<proyecto>/` con su URL pública; **no**
-     se colocan en `attachments` de Postiz. Solo si el usuario lo pide, puede
-     incluirse el enlace en el texto HTML (`<p>...</p>`) del post.
-5. **Ajustes por plataforma (`settings`):** título, visibilidad (`public` /
-   `private` / `unlisted` en YouTube, etc.), `shortLink`, etc.
+     a `minio/postiz`.
+   * **Miniatura (opcional):** si se subió portada `.jpg`/`.png`, vincular su
+     URL S3 en `attachments[0].thumbnail` (y/o `settings.thumbnail` si la
+     plataforma lo pide).
+   * **Archivos auxiliares (subtítulos, créditos, etc.):** quedan en
+     `minio/postiz/<proyecto>/` con su URL pública; **no** se colocan en
+     `attachments`.
+5. **Ajustes por plataforma (`settings`):** título (≤ 100 car. en YouTube
+   Shorts, incluyendo `#Shorts` si aplica), visibilidad (`public` / `private` /
+   `unlisted`), `selfDeclaredMadeForKids`, etiquetas y `shortLink`.
 
 ### Paso 5: Programación y verificación en Postiz
-1. Invocar `integrationSchedulePostTool` con `socialPost`.
-2. Si tiene éxito, entregar al usuario:
-   * Los `previewUrl` de cada publicación creada.
-   * El resumen de todas las URLs guardadas en MinIO (video, miniatura y
-     archivos auxiliares del proyecto).
+1. Invocar `integrationSchedulePostTool` con `socialPost` (en lote o individual).
+2. Verificar con `postsListTool` o reportar al usuario:
+   * Los `previewUrl` de cada Reel creado/programado y su hora local/UTC.
+   * El resumen de todas las URLs guardadas en MinIO.
 3. Si devuelve `output.errors`, corregir los parámetros observados y reintentar
    tras confirmar cualquier cambio relevante.

@@ -1,35 +1,33 @@
 # `postiz-minio-publisher`
 
-Skill para **Antigravity / Gemini** que automatiza la validación, normalización y
-subida de videos (`.mp4`, `.mov`, `.mkv`), miniaturas y archivos auxiliares de
-proyecto hacia un bucket **MinIO S3** (`minio/postiz`) mediante `mc.exe`, para
-luego consultar canales y programar o publicar en redes sociales mediante el
-**servidor MCP de Postiz** sin re-descargar archivos pesados.
+Skill para **Antigravity / Gemini** enfocada **exclusivamente en Reels / Shorts /
+TikToks** (`.mp4`, `.mov`, `.mkv`; verticales y cortos por defecto) que valida,
+normaliza y sube lotes o clips individuales a **MinIO S3** (`minio/postiz`)
+mediante `mc.exe`, para luego programarlos o publicarlos en redes sociales con el
+**servidor MCP de Postiz** sin re-descargar medios.
 
 ---
 
 ## Características principales
 
-- **Organización en MinIO por proyecto o raíz:** al recibir la ruta del video,
-  lista carpetas existentes en `minio/postiz/`, pregunta si subir a la raíz o a
-  una subcarpeta por proyecto (creándola automáticamente si no existe) y exige
-  confirmación explícita antes de iniciar la transferencia.
-- **Normalización y validación local previa (`scripts/minio_publisher.py`):**
-  - Acepta estrictamente videos `.mp4`, `.mov` y `.mkv`.
-  - Normaliza nombres de carpeta y archivo (minúsculas, ASCII sin acentos ni
-    espacios) para generar URLs S3 limpias.
-  - Detecta si el objeto ya existe en MinIO (`mc.exe stat`) y extrae metadatos
-    básicos con `ffprobe` cuando está disponible.
-- **Activos adicionales del proyecto:** permite subir miniaturas (`.jpg`,
-  `.jpeg`, `.png`, `.webp`) para vincularlas en Postiz, y archivos auxiliares
-  (líneas del tiempo, subtítulos, licencias, etc.) para resguardarlos en la
-  misma carpeta del proyecto en MinIO.
-- **Cero duplicación en Postiz:** envía directamente la URL
+- **Validación estricta solo Reels:** bloquea automáticamente videos largos
+  (`> 180 s`), pesados (`> 500 MiB`) u horizontales (`width > height`, `16:9`)
+  usando `ffprobe`, evitando problemas de carga en archivos largos.
+- **Soporte por carpeta o lote (`--video-dir` / `--video` + `--name`):** permite
+  pasar una carpeta completa de Reels o rutas individuales con nombres
+  normalizados personalizados (ej. `reel_01_01_es.mp4`, `reel_01_02_es.mp4`).
+- **Organización en MinIO por proyecto o raíz:** lista carpetas existentes en
+  `minio/postiz/`, pregunta si subir a la raíz o a una subcarpeta por proyecto
+  (creándola automáticamente si no existe) y exige confirmación explícita antes
+  de iniciar la subida.
+- **Barra de progreso en vivo:** transmite progreso limpio (`%`, velocidad y ETA)
+  en `stderr` y soporta `--progress-file` para monitores externos.
+- **Cero duplicación en Postiz:** envía directamente las URLs
   `https://s3.atomsystems.org/postiz/...` a `integrationSchedulePostTool` sin
-  pasar por `uploadFromUrlTool` (ideal para archivos de varios GB).
-- **Control de publicación:** pregunta siempre entre `schedule`, `draft` o
-  `now`, convierte la hora local del sistema a **UTC** y publica solo el post
-  principal (sin comentarios adicionales).
+  pasar por `uploadFromUrlTool`.
+- **Programación controlada:** pregunta siempre modo (`schedule`, `draft` o
+  `now`), visibilidad y horarios locales (ej. `06:00` + cada `4` horas),
+  convierte automáticamente a **UTC** y publica sin comentarios adicionales.
 
 ---
 
@@ -37,13 +35,13 @@ luego consultar canales y programar o publicar en redes sociales mediante el
 
 ```text
 postiz-minio-publisher/
-├── SKILL.md                        # Instrucciones principales de la skill
+├── SKILL.md                        # Instrucciones principales de la skill (solo Reels)
 ├── README.md                       # Documentación, instalación y uso
 ├── VERSION                         # Versión actual (Semantic Versioning)
 ├── CHANGELOG.md                    # Historial de cambios
 ├── LICENSE
 ├── scripts/
-│   └── minio_publisher.py          # CLI de validación, normalización, subida y UTC (PEP 723 + uv)
+│   └── minio_publisher.py          # CLI de validación Reels, normalización, subida, UTC y descripciones
 ├── references/
 │   └── postiz-mcp-tools.md         # Esquemas verificados del servidor MCP de Postiz
 └── tests/
@@ -59,10 +57,10 @@ postiz-minio-publisher/
    `https://s3.atomsystems.org/postiz/`.
 2. **[`uv`](https://docs.astral.sh/uv/)** (o Python 3.10+) para ejecutar
    `scripts/minio_publisher.py`.
-3. **`ffprobe`** opcional en `PATH` para inspeccionar duración, resolución y
-   códecs del video antes de subirlo.
+3. **`ffprobe`** (y **`ffmpeg`** si conviertes portadas `.webp` a `.jpg`) en
+   `PATH` para validar duración y orientación vertical de cada Reel.
 4. **Servidor MCP de Postiz** configurado en `~/.gemini/config/mcp_config.json`
-   apuntando a tu instancia (`https://postiz.atomsystems.org`), idealmente con
+   apuntando a tu instancia (`https://postiz.atomsystems.org`) con
    `STORAGE_PROVIDER="cloudflare"` y
    `CLOUDFLARE_BUCKET_URL="https://s3.atomsystems.org/postiz"`.
 
@@ -92,19 +90,19 @@ Antigravity descubre automáticamente cualquier carpeta con `SKILL.md` dentro de
 ### Dentro de Antigravity
 
 Invoca la skill con `@postiz-minio-publisher` o `/postiz-minio-publisher`
-indicando la ruta del video:
+indicando un Reel o una carpeta de Reels:
 
-> "Usa `@postiz-minio-publisher` para subir `C:\Videos\Mi Video.mp4` con su
-> miniatura `C:\Videos\portada.png` y programarlo en YouTube."
+> "Usa `@postiz-minio-publisher` para subir estos Reels `D:\Videos\Clips\Parte1\ES`
+> a `gta-vi/reels-es` y programarlos en YouTube Shorts desde las 6 am cada 4 horas."
 
 El agente ejecutará el flujo paso a paso:
-1. Validará extensión (`.mp4`, `.mov`, `.mkv`) y archivos auxiliares.
-2. Listará proyectos existentes en `minio/postiz/` y te preguntará si va en
-   raíz o en una subcarpeta por proyecto.
-3. Mostrará los nombres normalizados y pedirá confirmación antes de ejecutar
-   `mc.exe cp`.
-4. Consultará canales y horarios en Postiz, preguntará el modo (`schedule`,
-   `draft` o `now`) y convertirá tu hora local a UTC antes de programar.
+1. Validará extensión (`.mp4`, `.mov`, `.mkv`), duración (`≤ 180 s`), tamaño
+   (`≤ 500 MiB`) y orientación vertical (`height >= width`).
+2. Listará proyectos existentes en `minio/postiz/` y te preguntará la ruta
+   destino y nombres normalizados.
+3. Mostrará la vista previa y pedirá confirmación antes de ejecutar `mc.exe cp`.
+4. Consultará canales y horarios en Postiz, confirmará modo (`schedule`, `draft`
+   o `now`) y visibilidad, y convertirá tu hora local a UTC antes de agendar.
 
 ### Uso directo del script (`scripts/minio_publisher.py`)
 
@@ -112,22 +110,24 @@ El agente ejecutará el flujo paso a paso:
 # Listar carpetas de proyecto existentes en minio/postiz
 uv run ./scripts/minio_publisher.py list-projects
 
-# Validar y previsualizar rutas normalizadas sin subir aún
+# Validar y previsualizar una carpeta completa de Reels (sin subir aún)
 uv run ./scripts/minio_publisher.py prepare `
-  --video "C:\Ruta\Mi Video.mp4" `
-  --thumbnail "C:\Ruta\Portada.png" `
-  --extra "C:\Ruta\Licencia.txt" `
-  --project "Mi Proyecto"
+  --video-dir "D:\Videos\Clips\Parte1\ES" `
+  --project "gta-vi/reels-es"
 
-# Subir archivos confirmados y verificar acceso HTTPS
+# Subir lote de Reels con nombres normalizados personalizados y barra de progreso
 uv run ./scripts/minio_publisher.py upload `
-  --video "C:\Ruta\Mi Video.mp4" `
-  --thumbnail "C:\Ruta\Portada.png" `
-  --extra "C:\Ruta\Licencia.txt" `
-  --project "Mi Proyecto"
+  --video "D:\Videos\Clips\Parte1\ES\Reel_01_ES.mp4" --name "reel_01_01_es.mp4" `
+  --video "D:\Videos\Clips\Parte1\ES\Reel_02_ES.mp4" --name "reel_01_02_es.mp4" `
+  --project "gta-vi/reels-es"
 
 # Convertir hora local del sistema a UTC para Postiz
-uv run ./scripts/minio_publisher.py to-utc --local-datetime "2026-11-22 18:30"
+uv run ./scripts/minio_publisher.py to-utc --local-datetime "2026-11-22 06:00"
+
+# Construir descripción HTML para Postiz desde archivos de texto
+uv run ./scripts/minio_publisher.py build-description `
+  --chapters "D:\Videos\chapters1.txt" `
+  --credits "D:\Videos\drift_3y4_out\youtube_credits.txt"
 ```
 
 ### Pruebas unitarias
